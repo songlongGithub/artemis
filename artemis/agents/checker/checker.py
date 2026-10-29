@@ -49,7 +49,13 @@ from artemis.constants import CHECKER_MAX_ITERATIONS
 from artemis.context import ArtemisContext
 from artemis.data_engine.context_vars import CURRENT_TRACE_ID
 from artemis.data_engine.trace import trace, trace_langchain_tool
-from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
+from artemis.llm.structured import ParseFailure, content_to_text, parse_structured
+from artemis.services.llm import (
+    acomplete,
+    acomplete_structured,
+    get_llm,
+    invoke_llm_with_timeout_message,
+)
 from artemis.tools.history import get_history_tools
 from artemis.tools.scratchpad import get_read_note_tool_pure
 from artemis.tools.tool_wrapper import (
@@ -408,7 +414,12 @@ def _format_check_items(check_items: list) -> str:
 
 
 async def _structured_report(llm, messages) -> CheckReport:
-    structured_llm = llm.with_structured_output(CheckReport)
+    # Keep parser errors outside the transport retry/pause loop. OpenAI-compatible
+    # endpoints may return schema-valid JSON in Markdown fences even when a JSON
+    # schema was requested; include_raw lets us validate that payload ourselves.
+    # A schema dict also prevents the OpenAI SDK from parsing into Pydantic
+    # before LangChain's include_raw boundary can retain the actual response.
+    structured_llm = llm.with_structured_output(CheckReport.model_json_schema(), include_raw=True)
     # A conversation must end with a user turn: Gemini rejects requests whose
     # last message is the model's own answer ("Requests ending with a model
     # turn are not supported"), which is exactly the state after the loop's
@@ -422,6 +433,52 @@ async def _structured_report(llm, messages) -> CheckReport:
     if isinstance(result, CheckReport):
         return result
     if isinstance(result, dict):
+        parsed = result.get("parsed")
+        if isinstance(parsed, CheckReport):
+            return parsed
+        if isinstance(parsed, dict):
+            try:
+                return CheckReport.model_validate(parsed)
+            except ValidationError:
+                pass
+        if "raw" in result:
+            raw = result["raw"]
+            recovered = parse_structured(
+                content_to_text(getattr(raw, "content", "")), schema=CheckReport
+            )
+            if not isinstance(recovered, ParseFailure):
+                return recovered
+            # An invalid schema is not a verdict. Give the model one bounded
+            # corrective turn; persistent invalid output remains an error.
+            correction_messages = [*messages]
+            if isinstance(raw, AIMessage):
+                # A rejected structured tool call has no tool result. Replaying
+                # it would leave an unresolved call before the next user turn.
+                # Keep its payload as text, without protocol-level tool calls.
+                rejected_payload = content_to_text(raw.content)
+                if raw.tool_calls or raw.invalid_tool_calls:
+                    rejected_payload += "\n" + json.dumps(
+                        {
+                            "tool_calls": raw.tool_calls,
+                            "invalid_tool_calls": raw.invalid_tool_calls,
+                        }
+                    )
+                correction_messages.append(AIMessage(content=rejected_payload))
+            correction_messages.append(
+                HumanMessage(
+                    content=(
+                        "Your verdict report failed validation: "
+                        f"{recovered.error}. Return ONLY JSON matching this schema; "
+                        "preserve the observed evidence and verdict values.\n"
+                        + json.dumps(CheckReport.model_json_schema())
+                    )
+                )
+            )
+            return await invoke_llm_with_timeout_message(
+                acomplete_structured(
+                    llm, correction_messages, schema=CheckReport, correction_attempts=0
+                )
+            )
         try:
             return CheckReport.model_validate(result)
         except ValidationError as exc:
