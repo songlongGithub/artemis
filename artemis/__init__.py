@@ -42,3 +42,5 @@ __all__ = [
     "TaskResult",
     "BaseDeviceDriver",
 ]
+
+from artemis.runtime import trace_retention as _trace_retention  # noqa: F401

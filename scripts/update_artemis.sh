@@ -58,6 +58,7 @@ uv run --locked --no-sync python -m pytest \
     tests/unit/mcp/test_diagnose_tool.py \
     tests/unit/config/test_optional_llm_roles.py \
     tests/unit/agents/test_local_model_routing.py \
-    tests/unit/test_personal_fork_scripts.py
+    tests/unit/test_personal_fork_scripts.py \
+    tests/unit/runtime/test_trace_retention.py
 
 echo "Artemis tracked branch updated and focused checks passed."
