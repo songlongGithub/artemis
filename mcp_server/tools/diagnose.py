@@ -34,6 +34,7 @@ from typing import Any
 
 from mcp_server.base import mcp
 from mcp_server.utils import env_utils
+from artemis.config.settings import settings
 from artemis.core.diagnostics import readiness_engine
 from artemis.core.diagnostics.device_smoke import smoke_test_device
 from artemis.core.diagnostics.readiness import (
@@ -388,18 +389,36 @@ async def _verify_credentials(cred_result: ProbeResult | None) -> list[dict[str,
     if not targets:
         return []
 
-    outcomes = await asyncio.gather(
-        *(
-            validate_api_key(
+    # Match the model router: OpenAI-compatible keys belong to the configured
+    # endpoint, not necessarily api.openai.com. Probe that key/URL pair once.
+    openai_base_url = settings.OPENAI_BASE_URL
+    has_openai_key = any(provider == "openai" for provider, _, _ in targets)
+    if openai_base_url and has_openai_key:
+        targets = [
+            target
+            for target in targets
+            if not (target[0] == "custom" and target[2].rstrip("/") == openai_base_url.rstrip("/"))
+        ]
+
+    async def verify(provider: str, key: str):
+        if provider == "openai" and openai_base_url:
+            return await validate_api_key(
+                provider,
+                key,
+                base_url=openai_base_url,
+                timeout=CREDENTIAL_CHECK_TIMEOUT_SECONDS,
+            )
+        if provider in _ENDPOINT_PROVIDERS:
+            return await validate_api_key(
                 provider,
                 "EMPTY",
                 base_url=key,
                 timeout=CREDENTIAL_CHECK_TIMEOUT_SECONDS,
             )
-            if provider in _ENDPOINT_PROVIDERS
-            else validate_api_key(provider, key, timeout=CREDENTIAL_CHECK_TIMEOUT_SECONDS)
-            for provider, _label, key in targets
-        ),
+        return await validate_api_key(provider, key, timeout=CREDENTIAL_CHECK_TIMEOUT_SECONDS)
+
+    outcomes = await asyncio.gather(
+        *(verify(provider, key) for provider, _label, key in targets),
         return_exceptions=True,
     )
     verified: list[dict[str, Any]] = []
@@ -408,6 +427,9 @@ async def _verify_credentials(cred_result: ProbeResult | None) -> list[dict[str,
             valid, message = False, f"verification raised {outcome.__class__.__name__}: {outcome}"
         else:
             valid, message = bool(outcome[0]), str(outcome[1])
+        if provider == "openai" and openai_base_url:
+            label = "Custom OpenAI Endpoint"
+            message = message.replace(openai_base_url, "***")
         verified.append(
             {
                 "provider": provider,

@@ -49,6 +49,7 @@ __all__ = [
     "LLMWithFallback",
     "deep_merge_llm_config",
     "get_default_llm_config",
+    "get_operator_model_provider",
     "initialize_llm_config",
     "lightweight_judge_default",
     "load_llm_config_override",
@@ -130,6 +131,20 @@ class LLMConfig(LLMConfigBase):
         return val
 
 
+def get_operator_model_provider(ctx: Any = None) -> str:
+    """Provider for explicit auxiliary model names in the personal fork.
+
+    Real configs have a validated string provider. Legacy partial contexts
+    without one keep the original Google default; explicit provider strings
+    still go through ModelProvider validation at the caller.
+    """
+    config = getattr(ctx, "llm_config", None) if ctx is not None else None
+    if config is None:
+        config = get_default_llm_config()
+    provider = getattr(getattr(config, "operator", None), "provider", None)
+    return provider if isinstance(provider, str) else "google"
+
+
 def _expand_default_into_nodes(config_dict: dict) -> dict:
     """Expand unified config format with 'default' and 'nodes' into full LLMConfig schema."""
     if "planner" in config_dict and "utils" in config_dict:
@@ -170,6 +185,17 @@ def _expand_default_into_nodes(config_dict: dict) -> dict:
         "video_analyzer",
         "object_detector",
     ]
+
+    # Honor explicit overrides for optional roles without changing their
+    # factory defaults for configurations that do not specify them.
+    for optional_node in (
+        "history_analyzer",
+        "validator_pixel_safety_net",
+        "planner_validation",
+        "output_analyzer",
+    ):
+        if optional_node in nodes_override:
+            all_agent_nodes.append(optional_node)
 
     result: dict[str, Any] = {}
     for node in all_agent_nodes:

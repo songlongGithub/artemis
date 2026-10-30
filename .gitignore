@@ -87,6 +87,8 @@ yarn-error.log*
 # Artemis Runtime & Telemetry
 traces/
 scratch/
+local-verification/
+config/*.jsonc.bak-*
 .artemis_paused
 .artemis_server.json
 *.log

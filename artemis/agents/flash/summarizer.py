@@ -34,7 +34,9 @@ from uuid import UUID
 from jinja2 import Template
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
+from artemis.config.llm import get_operator_model_provider
 from artemis.context import ArtemisContext
+from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
 from artemis.memory.step_memory import JobKey, StepMemoryService
 from artemis.services.llm import RobustChatModelWrapper, get_google_llm, get_llm
 from artemis.services.token_meter import record_llm_usage
@@ -164,13 +166,21 @@ class VisualStepSummarizer(StepMemoryService):
         # Initialize lightweight VLM: prioritize explicit model_name
         target_model = model_name or "gemini-2.5-flash-lite"
         self._model_name = target_model
-        try:
-            if model_name:
+        if model_name:
+            provider = ModelProvider.from_string(get_operator_model_provider(ctx))
+            if provider == ModelProvider.GOOGLE:
                 self._llm = get_google_llm(model_name=target_model, temperature=0.0)
             else:
-                self._llm = get_llm(ctx, name="summarizer", is_utils=True)
-        except Exception:
-            self._llm = get_google_llm(model_name=target_model, temperature=0.0)
+                self._llm = ModelFactory.get_model(
+                    ModelEndpoint(
+                        provider=provider,
+                        model_name=target_model,
+                        temperature=0.0,
+                        timeout_seconds=120.0,
+                    )
+                )
+        else:
+            self._llm = get_llm(ctx, name="summarizer")
         try:
             configured = getattr(self._llm, "model", None) or getattr(self._llm, "model_name", None)
             if isinstance(configured, str) and configured:
