@@ -76,6 +76,7 @@ def _emulator_state(status: EmulatorLaunchStage, avd: str = "Pixel_8", **extra) 
 def temp_trace_env(monkeypatch):
     temp_dir = tempfile.mkdtemp()
     monkeypatch.setattr(trace_store, "TRACES_DIR", temp_dir)
+    monkeypatch.setattr(diagnose.settings, "OPENAI_BASE_URL", None)
     yield temp_dir
     shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -824,6 +825,41 @@ def test_verify_credentials_reports_every_provider_without_leaking_keys(temp_tra
     assert called == {"google": "SECRET-GOOGLE", "openai": "SECRET-OPENAI", "ocr": "SECRET-OCR"}
     assert all(call.kwargs["timeout"] == 12.0 for call in validate.await_args_list)
     assert "SECRET" not in repr(result)
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_openai_proxy_uses_configured_endpoint_and_preserves_failures(
+    temp_trace_env, monkeypatch, valid
+):
+    endpoint = "http://127.0.0.1:10100/v1"
+    monkeypatch.setattr(diagnose.settings, "OPENAI_BASE_URL", endpoint)
+    cred = _probe(
+        "gemini_api_key",
+        ProbeStatus.PASS,
+        category=ProbeCategory.CREDENTIALS,
+        metadata={
+            "providers": [
+                {"provider": "openai", "label": "ChatGPT", "raw_key": "SECRET-PROXY"},
+                {"provider": "custom", "label": "Custom OpenAI Endpoint", "raw_key": endpoint},
+            ],
+            "api_keys": {"openai": "SECRET-PROXY", "custom": endpoint},
+        },
+    )
+    validate = AsyncMock(return_value=(valid, f"endpoint {endpoint}, key SECRET-PROXY"))
+    probes = [p for p in _healthy_probes() if p.id != "gemini_api_key"] + [cred]
+    result = _run(probes, validate=validate, verify_credentials=True)
+
+    validate.assert_awaited_once_with(
+        "openai",
+        "SECRET-PROXY",
+        base_url=endpoint,
+        timeout=12.0,
+    )
+    assert result["verdict"] == ("ready" if valid else "blocked")
+    assert len(result["credentials"]) == 1
+    assert result["credentials"][0]["label"] == "Custom OpenAI Endpoint"
+    assert "SECRET-PROXY" not in repr(result)
+    assert endpoint not in repr(result)
 
 
 def test_verify_credentials_calls_endpoint_providers_by_url(temp_trace_env):
