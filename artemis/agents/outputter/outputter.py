@@ -42,7 +42,7 @@ from artemis.tools.tool_wrapper import (
     tool_result_messages,
 )
 from artemis.memory.context_policy import build_history_for
-from artemis.utils.notes import read_note_content
+from artemis.utils.notes import read_note_content, save_note_content
 from artemis.utils.task_tree import get_active_subgoal_hashes
 from third_party.mobile_use.utils.logger import get_logger
 from pydantic import BaseModel
@@ -207,6 +207,46 @@ def _verification_block(ctx: ArtemisContext, graph_output: State) -> str | None:
     except Exception as e:
         logger.error(f"Failed to attach verdict ledger to outputter: {e}")
         return None
+
+
+def _unmet_verification_report(ctx: ArtemisContext, graph_output: State) -> str | None:
+    """Use the settled machine outcome when acceptance was not established.
+
+    Task completion and test acceptance are separate axes. Do not ask a model
+    (including a structured formatter) to reinterpret failed or missing evidence.
+    All-passed and runs without a verdict outcome keep the normal synthesis path.
+    """
+    from artemis.graph.checkpoints import read_run_outcome
+
+    base_dir = _notes_base_dir(ctx)
+    outcome = read_run_outcome(base_dir) if base_dir else None
+    outcome = outcome or getattr(graph_output, "run_outcome", None)
+    if not isinstance(outcome, dict):
+        return None
+    tests = outcome.get("tests") or {}
+    unmet = any(tests.get(key, 0) for key in ("failed", "inconclusive", "unchecked"))
+    if not unmet and outcome.get("task_status") not in {"partial", "blocked"}:
+        return None
+    status = "FAILED" if tests.get("failed", 0) else "NOT VERIFIED"
+    report = (
+        f"# Verification: {status}\n\n"
+        "Task execution status does not mean that all acceptance checks passed.\n\n"
+        + (_verification_block(ctx, graph_output) or json.dumps(outcome, ensure_ascii=False))
+    )
+    if tests.get("unchecked", 0) and base_dir:
+        plan_path = Path(base_dir) / "notes" / "task_plan.md"
+        if plan_path.exists():
+            report += "\n\n--- Declared plan (unchecked items are not passed) ---\n"
+            report += plan_path.read_text(encoding="utf-8")
+    if base_dir:
+        # This is the same canonical note read by the UI and MCP task report.
+        # Earlier operator notes remain historical evidence, not the final verdict.
+        try:
+            save_note_content(base_dir, OUTPUT_NOTE_KEY, report)
+        except OSError as e:
+            logger.error(f"Failed to persist authoritative verification report: {e}")
+            report += f"\n\nReport persistence failed: {e}"
+    return report
 
 
 def _environment_block(ctx: ArtemisContext) -> str | None:
@@ -513,8 +553,12 @@ async def outputter(
     output_config: OutputConfig,
     graph_output: State,
     plan_and_history: str | None = None,
-) -> dict:
+) -> Any:
     logger.info("Starting Outputter Agent")
+
+    unmet_report = _unmet_verification_report(ctx, graph_output)
+    if unmet_report is not None:
+        return unmet_report
 
     if plan_and_history is None and ctx.data_engine:
         plan_and_history = _resolve_plan_and_history(ctx)

@@ -149,6 +149,12 @@ class PlannerValidationConfig(BaseModel):
             " the concern and its reason as feedback."
         ),
     )
+    timeout_seconds: float = Field(
+        default=20.0,
+        gt=0,
+        le=120,
+        description="Wall-clock deadline for advisory plan review, including retries and JSON repair.",
+    )
     model_config = {"extra": "allow"}
 
 

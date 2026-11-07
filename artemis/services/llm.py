@@ -99,6 +99,9 @@ def _begin_llm_request(provider: str | None) -> Token:
 # retries hands over to it immediately instead of pausing the whole task.
 _FALLBACK_AVAILABLE: ContextVar[bool] = ContextVar("llm_fallback_available", default=False)
 
+# Optional background advice must never pause the device-owning task.
+_PAUSE_ALLOWED: ContextVar[bool] = ContextVar("llm_pause_allowed", default=True)
+
 # Shared circuit breaker keyed by "provider:model".  Transient failures open
 # it; while open, concurrent calls wait out the cooldown instead of hammering
 # a provider that is already melting down.
@@ -468,14 +471,14 @@ async def _run_with_recovery[T](
                     return result
 
             # Retryable attempts exhausted.
-            if _FALLBACK_AVAILABLE.get():
+            if _FALLBACK_AVAILABLE.get() or not _PAUSE_ALLOWED.get():
                 _record_llm_event(
                     "llm_gave_up",
                     {
                         "error": str(last_error)[:1000],
                         "category": last_failure.category.value,
                         "retryable": True,
-                        "handover": "fallback",
+                        "handover": "fallback" if _FALLBACK_AVAILABLE.get() else "caller",
                     },
                     status="failed",
                 )
@@ -800,6 +803,20 @@ async def acomplete(llm, *args, **kwargs):
             f"astream unavailable on {type(llm).__name__} ({stream_error}); using ainvoke."
         )
     return await llm.ainvoke(*args, **kwargs)
+
+
+async def acomplete_advisory_structured(llm, messages: list, *, schema, timeout_seconds: float):
+    """Bound optional advice, including retries/JSON repair, without global pause.
+
+    The context-local policy leaves normal calls and concurrent tasks unchanged.
+    Cancellation propagates and the caller decides how to report unavailable advice.
+    """
+    token = _PAUSE_ALLOWED.set(False)
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            return await acomplete_structured(llm, messages, schema=schema)
+    finally:
+        _PAUSE_ALLOWED.reset(token)
 
 
 async def acomplete_structured(

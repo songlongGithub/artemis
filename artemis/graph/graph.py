@@ -191,10 +191,13 @@ async def execution_check_node(state: State, ctx: ArtemisContext):
         awaited_planner_task = ctx.planner_task
         try:
             planner_result = await awaited_planner_task
-            ctx.planner_task = None
+            # A superseding write owns its own pending plan and review task.
+            if ctx.planner_task is not awaited_planner_task:
+                planner_result = None
 
             flagged = bool(planner_result and planner_result.get("status") == "failed")
-            if flagged:
+            unavailable = bool(planner_result and planner_result.get("status") == "unavailable")
+            if flagged and planner_result:
                 # Advisory outcome: the plan change stays applied and the
                 # turn's actions run. The Operator only receives the concern
                 # and its reason through operator_feedback — the one feedback
@@ -210,22 +213,39 @@ async def execution_check_node(state: State, ctx: ArtemisContext):
                     " correct the plan only if you agree."
                 )
                 turn_metadata["planner_flagged"] = True
-            else:
+            elif unavailable and planner_result:
+                feedback = planner_result.get("feedback", "Advisory review unavailable.")
+                logger.warning(feedback)
+                check_findings.append(
+                    f"[planner] {feedback} The plan remains applied; no approval was obtained."
+                )
+                turn_metadata["planner_unavailable"] = True
+            elif planner_result:
                 logger.info("Planner validation approved the task plan changes.")
 
-            # Advance the ratchet baseline either way: the reviewed content is
-            # the new reference, so an already-flagged change is not re-flagged
-            # on every subsequent write.
-            if ctx.pending_validated_plan is not None:
-                ctx.last_validated_plan = ctx.pending_validated_plan
-            ctx.pending_validated_plan = None
+            # Remember the attempted review's content without implying approval.
+            # Do not re-request the same failed/unavailable advice every turn.
+            if ctx.planner_task is awaited_planner_task:
+                if ctx.pending_validated_plan is not None:
+                    ctx.last_validated_plan = ctx.pending_validated_plan
+                ctx.pending_validated_plan = None
+                ctx.planner_task = None
         except asyncio.CancelledError:
             if not awaited_planner_task.cancelled():
                 raise  # this node itself is being cancelled, not the awaited task
             logger.info("Planner validation task was superseded by a newer plan write.")
-            ctx.planner_task = None
+            if ctx.planner_task is awaited_planner_task:
+                ctx.planner_task = None
+                ctx.pending_validated_plan = None
         except Exception as e:
             logger.error(f"Planner validation task failed: {e}")
+            check_findings.append(
+                f"[planner] Advisory review unavailable: {e}. No approval was obtained."
+            )
+            turn_metadata["planner_unavailable"] = True
+            if ctx.planner_task is awaited_planner_task:
+                ctx.planner_task = None
+                ctx.pending_validated_plan = None
 
     # Every Operator turn is recorded — verification never gates history.
     current_step_id = _record_turn(turn_metadata)

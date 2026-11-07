@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from langchain_core.messages import AIMessage
 from artemis.agents.planner.planner import run_async_planner_validation
 
 
@@ -41,11 +42,13 @@ async def test_planner_validation():
         "- [/] Click the button\n- [ ] Complete task\n- [ ] New subgoal appended at bottom"
     )
     mock_llm = MagicMock()
-    mock_structured = MagicMock()
-    mock_structured.ainvoke = AsyncMock(
-        return_value=ValidationResult(is_approved=True, feedback="Valid plan modification")
-    )
-    mock_llm.with_structured_output.return_value = mock_structured
+
+    async def stream(*args, **kwargs):
+        yield AIMessage(
+            content='```json\n{"is_approved": true, "feedback": "Valid plan modification"}\n```'
+        )
+
+    mock_llm.astream = stream
 
     with patch("artemis.agents.planner.planner.get_llm", return_value=mock_llm) as get_llm:
         res = await run_async_planner_validation(

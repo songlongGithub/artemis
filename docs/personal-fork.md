@@ -32,3 +32,29 @@ This calls the named tool with the supplied JSON arguments; use only the intende
 tool and arguments. Existing IDE MCP processes keep their imported modules until
 reloaded. Local diagnostic records under `local-verification/` and dated config
 backups stay local and are ignored by Git. Their original contents are preserved.
+
+## Advisory review and final acceptance reports
+
+`agent.pro.planner_validation.timeout_seconds` defaults to 20 seconds (greater
+than zero, at most 120). The deadline covers retries, streaming and a single
+local JSON repair. Optional plan review uses context-local non-pausing recovery:
+exhaustion or invalid JSON returns `unavailable` with a reason; cancellation
+propagates. It never creates the global pause file or fabricates approval.
+The attempted content becomes the comparison baseline to avoid requesting the
+same unavailable advice on every turn. Plan edits and actions remain applied;
+deterministic plan/check protections are unchanged.
+
+The settled `run_outcome.json` and append-only check ledger are authoritative for
+acceptance. `task_status=completed` only means execution completed. Failed,
+inconclusive or unchecked tests, or a partial/blocked task, produce a deterministic
+final report saved to `notes/output.md`, without another LLM or structured-format
+pass. This path returns text even when a custom output schema was requested;
+consumers must not interpret it as a successfully formatted success object.
+All-passed and no-outcome runs keep the existing synthesis path. Earlier notes
+and raw traces are retained and are not rewritten into passing evidence.
+
+For regression, compare exact failure identities against a frozen pre-change
+baseline. Tests of timeout, JSON repair, pause isolation and final-report guards
+use local fake providers and temporary trace directories, with no device, Broker
+or weather request. Live smoke checks are separate, bounded and read-only; they
+do not replace business acceptance or repair historical inconclusive results.

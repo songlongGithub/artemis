@@ -1147,3 +1147,41 @@ def test_stream_records_round_trip_and_carry_truncation_flags(tmp_path):
     assert records[1]["truncated"] is True and records[1]["dropped_chars"] == 40
     assert records[1]["segments"][0]["text"] == "x" * 5 + "\n…[40 chars truncated]…\n" + "x" * 5
     assert read_attempt_streams(tmp_path / "nowhere") == []
+
+
+@pytest.mark.asyncio
+async def test_unavailable_planner_review_preserves_actions_and_reports_no_approval(tmp_path):
+    plan_path = _write_plan(tmp_path)
+    ctx = _make_ctx(tmp_path)
+    ctx.pending_validated_plan = plan_path.read_text()
+    ctx.planner_task = asyncio.get_running_loop().create_future()
+    ctx.planner_task.set_result({"status": "unavailable", "feedback": "deadline exceeded"})
+    state = _make_state(operator_raw_data=_raw_data())
+    with patch("artemis.graph.graph._get_active_subgoal_hashes", return_value=("h", None)):
+        update = await execution_check_node(state, ctx)
+    assert update["checker_success"] is True
+    assert any("no approval was obtained" in line for line in update["operator_feedback"])
+    assert ctx.data_engine.record_step.call_args.kwargs["extra_metadata"]["planner_unavailable"]
+    assert ctx.last_validated_plan == plan_path.read_text()
+    assert ctx.pending_validated_plan is None
+    assert ctx.planner_task is None
+
+
+@pytest.mark.asyncio
+async def test_superseded_review_does_not_clear_new_review_owner(tmp_path):
+    _write_plan(tmp_path)
+    ctx = _make_ctx(tmp_path)
+    newer = asyncio.get_running_loop().create_future()
+
+    async def superseded():
+        ctx.planner_task = newer
+        ctx.pending_validated_plan = "newer plan"
+        return {"status": "success", "feedback": ""}
+
+    ctx.planner_task = asyncio.create_task(superseded())
+    state = _make_state(operator_raw_data=_raw_data())
+    with patch("artemis.graph.graph._get_active_subgoal_hashes", return_value=("h", None)):
+        await execution_check_node(state, ctx)
+    assert ctx.planner_task is newer
+    assert ctx.pending_validated_plan == "newer plan"
+    newer.cancel()

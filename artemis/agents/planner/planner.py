@@ -28,6 +28,7 @@ from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
 from artemis.services.llm import (
     acomplete,
+    acomplete_advisory_structured,
     get_llm,
     invoke_llm_with_timeout_message,
     with_fallback,
@@ -185,9 +186,29 @@ async def run_async_planner_validation(
 
         # Advisory review on the lightweight judge node (shared default with
         # the pixel safety net), never the heavyweight Planner model.
-        llm = get_llm(ctx=ctx, name="planner_validation").with_structured_output(ValidationResult)
+        llm = get_llm(ctx=ctx, name="planner_validation")
+        # Parse locally so OpenAI-compatible endpoints may return fenced JSON.
+        # The whole advisory call is bounded and cannot create the task pause file.
+        from artemis.config.agent import PlannerValidationConfig
 
-        result: ValidationResult = await invoke_llm_with_timeout_message(llm.ainvoke(messages))
+        agent_config = getattr(ctx, "agent_config", None)
+        config = (
+            agent_config.pro.planner_validation
+            if agent_config is not None
+            else PlannerValidationConfig()
+        )
+        result: ValidationResult = await acomplete_advisory_structured(
+            llm,
+            [
+                *messages,
+                HumanMessage(
+                    content="Reply only with JSON: "
+                    + json.dumps(ValidationResult.model_json_schema())
+                ),
+            ],
+            schema=ValidationResult,
+            timeout_seconds=config.timeout_seconds,
+        )
 
         return {
             "status": "success" if result.is_approved else "failed",
@@ -195,10 +216,10 @@ async def run_async_planner_validation(
         }
     except Exception as e:
         logger.error(f"Planner async validation failed: {e}")
-        # In case of error, we fallback to approving so we don't block the agent unnecessarily
+        # Unavailable advice is visible, never fabricated approval.
         return {
-            "status": "success",
-            "feedback": f"Validation failed with error: {e}",
+            "status": "unavailable",
+            "feedback": f"Advisory review unavailable ({type(e).__name__}): {e}",
         }
 
 
