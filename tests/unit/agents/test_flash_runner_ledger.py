@@ -684,3 +684,43 @@ def test_turn_record_reports_the_first_failure_of_a_multi_action_turn():
         ]
     )
     assert record.result()["error"] == "click rejected: coordinates out of bounds"
+
+
+@pytest.mark.asyncio
+async def test_initial_local_selection_does_not_invoke_or_calibrate_model(mock_context):
+    local = AIMessage(
+        content="Open Wi-Fi",
+        tool_calls=[{"name": "click", "args": {"target": 1}, "id": "local"}],
+        response_metadata={"decision_source": "local"},
+    )
+    with (
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch(
+            "artemis.agents.flash.runner.capture_screenshot_and_parse_ui",
+            AsyncMock(return_value=_INITIAL_OBSERVATION),
+        ),
+        patch(
+            "artemis.agents.flash.runner.try_initial_action", AsyncMock(return_value=local)
+        ) as choose,
+        patch.object(TranscriptLedger, "record_prompt_tokens") as record,
+    ):
+        runner = _make_runner(mock_context, [_report()], max_turns=0)
+        usage, measured = runner._resolve_token_usage(local, [], "Open Wi-Fi")
+        assert measured and usage["total_tokens"] == 0
+        result = await runner.run(State(initial_goal="Open Wi-Fi"))
+    assert result["status"] == "completed"
+    choose.assert_awaited_once()
+    assert runner._invoke_model.await_count == 1
+    # Only the regular model's completion report calibrates the transcript.
+    assert record.call_count == 1
+
+
+def test_decision_missing_usage_does_not_estimate_unsent_flash_context(mock_context):
+    response = AIMessage(content="Open Wi-Fi", response_metadata={"decision_source": "decisions"})
+    with patch("artemis.controllers.unified_controller.get_driver"):
+        runner = _make_runner(mock_context, [], max_turns=0)
+    usage, measured = runner._resolve_token_usage(
+        response, [HumanMessage(content="large unsent Flash prompt" * 100)], "Open Wi-Fi"
+    )
+    assert usage["total_tokens"] == 0
+    assert not measured

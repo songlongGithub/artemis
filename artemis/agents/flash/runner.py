@@ -53,6 +53,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from artemis.agents.flash.decision import try_initial_action
 from artemis.agents.flash.summarizer import VisualStepSummarizer, build_focus_context
 from artemis.agents.operator.prompts import REASONING_REMINDER, UserGuidance, render_user_guidance
 from artemis.agents.validator.tool_declarations import (
@@ -496,6 +497,14 @@ class FlashRunner:
         ledger's chars-per-token calibration (an estimate is itself derived
         from character counts, so calibrating on it would be circular).
         """
+        decision_source = getattr(response, "response_metadata", {}).get("decision_source")
+        if decision_source:
+            # Neither local selection nor Decisions submits the full Flash prompt.
+            # Unknown API usage must not be estimated from that unsent context.
+            usage = self._token_usage_from_response(response)
+            return usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, (
+                decision_source == "local" or usage is not None
+            )
         step_token_usage = self._token_usage_from_response(response)
         if step_token_usage and step_token_usage.get("total_tokens", 0) > 0:
             return step_token_usage, True
@@ -1086,7 +1095,14 @@ class FlashRunner:
             turn_base = len(messages) - 1
             current_tools = report_only_tools if is_final else tools_declaration
 
-            response = await self._invoke_model(llm, current_tools, messages)
+            decision = None
+            if turns == 1 and not is_final and not injected and not injected_guidance:
+                decision = await try_initial_action(
+                    self.ctx, state, self.goal, current_tools, self.controller
+                )
+            response = decision
+            if response is None:
+                response = await self._invoke_model(llm, current_tools, messages)
 
             if response is None:
                 break
@@ -1105,10 +1121,11 @@ class FlashRunner:
             # rides along so the ledger can calibrate its chars-per-token
             # ratio — only from a provider measurement, never from the
             # estimate (same as the Pro operator).
-            ledger.record_prompt_tokens(
-                step_token_usage.get("prompt_tokens"),
-                messages=messages[:-1] if measured else None,
-            )
+            if decision is None:
+                ledger.record_prompt_tokens(
+                    step_token_usage.get("prompt_tokens"),
+                    messages=messages[:-1] if measured else None,
+                )
 
             self._record_llm_trace(step_token_usage, raw_text)
 
