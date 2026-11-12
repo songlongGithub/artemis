@@ -50,6 +50,7 @@ __all__ = [
     "deep_merge_llm_config",
     "get_default_llm_config",
     "get_operator_model_provider",
+    "get_summarizer_reasoning_effort",
     "initialize_llm_config",
     "lightweight_judge_default",
     "load_llm_config_override",
@@ -143,6 +144,21 @@ def get_operator_model_provider(ctx: Any = None) -> str:
         config = get_default_llm_config()
     provider = getattr(getattr(config, "operator", None), "provider", None)
     return provider if isinstance(provider, str) else "google"
+
+
+def get_summarizer_reasoning_effort(ctx: Any, model_name: str, provider: str) -> str | None:
+    """Inherit the effort only when an auxiliary model matches its configured route."""
+    config = getattr(ctx, "llm_config", None)
+    if config is None:
+        config = get_default_llm_config()
+    summarizer = getattr(config, "summarizer", None)
+    for spec in (summarizer, getattr(summarizer, "fallback", None)):
+        if (
+            getattr(spec, "model", None) == model_name
+            and getattr(spec, "provider", None) == provider
+        ):
+            return getattr(spec, "reasoning_effort", None)
+    return None
 
 
 def _expand_default_into_nodes(config_dict: dict) -> dict:

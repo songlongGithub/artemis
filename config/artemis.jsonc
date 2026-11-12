@@ -8,12 +8,11 @@
   // ------------------------------------------------------------------------------
   "default": {
     "provider": "openai",
-    "model": "google-antigravity/gemini-3.8-flash",
-    "thinking_level": "medium",
+    "model": "gpt-6-luna--fast",
+    "reasoning_effort": "max",
     "fallback": {
       "provider": "openai",
-      "model": "gpt-6.1-sol",
-      "thinking_level": "medium"
+      "model": "google-antigravity/gemini-3.8-flash"
     }
   },
 
@@ -55,17 +54,11 @@
     "validator_pixel_safety_net": {},
     "planner_validation": {},
     // 🧠 Planner: High-level goal decomposition and strategic step planning
-    "planner": {
-      "thinking_level": "high"
-    },
+    "planner": {},
 
     // 🎯 Operator: Screen perception, element interaction, and direct execution
     "operator": {
-      "thinking_level": "medium",
-      "include_thoughts": true,
-      "fallback": {
-        "model": "gpt-6-luna--fast"
-      }
+      "include_thoughts": true
     },
 
     // 🎬 Video Analyzer: Multimodal screen recording verification and temporal analysis
@@ -84,21 +77,13 @@
     // NOTE:
     //  - "flash" version delegates directly to object_detector (requires Gemini ER model above).
     //  - "pro" / "ultra" versions run multi-turn ReAct loops (supports both Native Gemini and Universal Multi-Model LangChain engines).
-    "explorer": {
-      "thinking_level": "medium"
-    },
+    "explorer": {},
 
     // 📋 Summarizer: Aggregates step history and generates structured outcome
     "summarizer": {},
 
     // 🔽 Hopper: Fast lightweight package name locator
-    "hopper": {
-      "model": "gpt-6-luna--fast",
-      "fallback": {
-        "provider": "openai",
-        "model": "google-antigravity/gemini-3.8-flash"
-      }
-    },
+    "hopper": {},
 
     // 📝 Outputter: Synthesizes execution trace into final output report
     "outputter": {},
@@ -118,12 +103,9 @@
     // 🔎 Checker: Plan-declared checkpoint verification and exit final review.
     // Thoughts are streamed so the verifier's reasoning shows live in the timeline.
     "checker": {
-      "thinking_level": "medium",
       "include_thoughts": true
     }
-    // 🎯 Planner Validation: Advisory review of milestone changes.
-    // Defaults to the same lightweight model as the pixel safety net
-    // (gemini-3.5-flash-lite, temperature 0); add "planner_validation": {...} here to override.
+    // Planner Validation and Pixel Safety Net inherit the global model above.
   },
 
   // ------------------------------------------------------------------------------
@@ -244,7 +226,7 @@
         // call each); milestone closes are exempt, the hard line waives it.
         "min_steps": 3,
         "target_source_tokens": 2000,
-        "model": "google-antigravity/gemini-3.8-flash",
+        "model": "gpt-6-luna--fast",
         "max_chunks": 8
         // "max_eras": 8 // independent era cap; omitted = follows max_chunks
       },

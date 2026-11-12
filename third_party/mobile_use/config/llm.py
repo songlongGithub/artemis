@@ -60,7 +60,7 @@ class LLM(BaseModel):
     temperature: float | None = None
     thinking_budget: int | None = None
     thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
-    reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
+    reasoning_effort: Literal["none", "low", "medium", "high", "max"] | None = None
     include_thoughts: bool | None = None
     enable_grounding: bool | None = None
 

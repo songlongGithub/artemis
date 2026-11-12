@@ -34,7 +34,7 @@ from uuid import UUID
 from jinja2 import Template
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from artemis.config.llm import get_operator_model_provider
+from artemis.config.llm import get_operator_model_provider, get_summarizer_reasoning_effort
 from artemis.context import ArtemisContext
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
 from artemis.memory.step_memory import JobKey, StepMemoryService
@@ -177,6 +177,9 @@ class VisualStepSummarizer(StepMemoryService):
                         model_name=target_model,
                         temperature=0.0,
                         timeout_seconds=120.0,
+                        reasoning_effort=get_summarizer_reasoning_effort(
+                            ctx, target_model, provider.value
+                        ),
                     )
                 )
         else:

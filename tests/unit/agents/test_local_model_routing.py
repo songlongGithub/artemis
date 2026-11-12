@@ -59,6 +59,22 @@ def test_explicit_auxiliary_model_keeps_provider(which, provider):
         assert endpoint.model_name == model and endpoint.timeout_seconds == 120.0
 
 
+@pytest.mark.parametrize(
+    ("which", "effort"), [("flash", "max"), ("capsule", "max"), ("fallback", None)]
+)
+def test_auxiliary_model_inherits_effort_from_matching_route(which, effort):
+    ctx = context("openai")
+    ctx.llm_config.summarizer = SimpleNamespace(
+        provider="openai",
+        model="auxiliary",
+        reasoning_effort="max",
+        fallback=SimpleNamespace(provider="openai", model="fallback"),
+    )
+    with patch("artemis.llm.router.ModelFactory.get_model", return_value=object()) as factory:
+        build(which, ctx)
+    assert factory.call_args.args[0].reasoning_effort == effort
+
+
 @pytest.mark.parametrize("which", ["flash", "capsule", "fallback"])
 def test_compatible_endpoint_failure_never_switches_to_google(which):
     with (

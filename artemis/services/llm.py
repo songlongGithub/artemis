@@ -930,6 +930,7 @@ def _resolve_endpoint(
     name: str,
     is_utils: bool = False,
     use_fallback: bool = False,
+    reasoning_effort: str | None = None,
 ) -> ModelEndpoint:
     """Cleanly resolves a ModelEndpoint from context llm_config."""
     if getattr(ctx, "llm_config", None) is None:
@@ -958,7 +959,7 @@ def _resolve_endpoint(
     provider_val = getattr(cfg, "provider", "google")
     model_val = getattr(cfg, "model", "gemini-2.5-flash")
 
-    return ModelEndpoint(
+    endpoint = ModelEndpoint(
         provider=ModelProvider.from_string(provider_val),
         model_name=str(model_val),
         temperature=_get_val(cfg, "temperature", (int, float)) or 0.0,
@@ -969,6 +970,9 @@ def _resolve_endpoint(
         include_thoughts=_get_val(cfg, "include_thoughts", bool),
         enable_grounding=_get_val(cfg, "enable_grounding", bool) or False,
     )
+    if reasoning_effort is not None:
+        endpoint = endpoint.model_copy(update={"reasoning_effort": reasoning_effort})
+    return endpoint
 
 
 def _get_llm(
@@ -977,9 +981,16 @@ def _get_llm(
     is_utils: bool = False,
     use_fallback: bool = False,
     temperature: float | None = None,
+    reasoning_effort: str | None = None,
 ) -> BaseChatModel:
     """Resolves and instantiates the appropriate LLM wrapper for the given agent role."""
-    endpoint = _resolve_endpoint(ctx, name, is_utils=is_utils, use_fallback=use_fallback)
+    endpoint = _resolve_endpoint(
+        ctx,
+        name,
+        is_utils=is_utils,
+        use_fallback=use_fallback,
+        reasoning_effort=reasoning_effort,
+    )
     if temperature is not None:
         endpoint = endpoint.model_copy(update={"temperature": temperature})
     raw_model = ModelFactory.get_model(endpoint)

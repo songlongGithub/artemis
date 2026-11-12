@@ -45,7 +45,7 @@ from uuid import uuid4
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-from artemis.config.llm import get_operator_model_provider
+from artemis.config.llm import get_operator_model_provider, get_summarizer_reasoning_effort
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
 from artemis.memory.step_memory import JobKey, StepLens, StepMemoryService
 from artemis.memory.transcript import format_session_offset
@@ -335,6 +335,9 @@ class StepCapsuleLens(StepLens):
                 model_name=model_name,
                 temperature=0.0,
                 timeout_seconds=120.0,
+                reasoning_effort=get_summarizer_reasoning_effort(
+                    self._ctx, model_name, provider.value
+                ),
             )
         )
 

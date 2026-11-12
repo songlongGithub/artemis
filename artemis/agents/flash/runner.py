@@ -279,7 +279,7 @@ class FlashRunner:
     def _init_llm(self):
         """Initializes the Universal LLM via the Service Layer."""
         try:
-            return get_llm(self.ctx, name="operator")
+            return get_llm(self.ctx, name="operator", reasoning_effort="medium")
         except Exception as e:
             logger.warning(f"Failed to get operator LLM from config, using default: {e}")
 
