@@ -30,7 +30,7 @@ from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
 from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER, operator_shell_tool
 from artemis.llm.google import usage_from_message
-from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
+from artemis.services.llm import acomplete_operator, get_llm
 from artemis.tools.command_tool import (
     analyze_task_output_wrapper,
     get_adb_task_registry,
@@ -502,8 +502,7 @@ class OperatorNode:
                     )
                 )
 
-            bound_llm = base_llm.bind_tools(tools=traced_tools)
-            response = await invoke_llm_with_timeout_message(acomplete(bound_llm, current_messages))
+            response = await acomplete_operator(self.ctx, base_llm, traced_tools, current_messages)
 
             usage = usage_from_message(response)
             # The ledger's compaction thresholds read the operator's own

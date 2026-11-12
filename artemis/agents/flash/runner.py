@@ -82,10 +82,9 @@ from artemis.mcp.observation import observe
 from artemis.memory.transcript import PRO_UI_LIST_MARKER, TranscriptLedger, mark_ephemeral
 from artemis.services.llm import (
     RobustChatModelWrapper,
-    acomplete,
+    acomplete_operator,
     get_google_llm,
     get_llm,
-    invoke_llm_with_timeout_message,
 )
 from artemis.tools.history import history_tool_declarations
 from artemis.tools.tool_wrapper import tool_result_messages
@@ -882,16 +881,8 @@ class FlashRunner:
         return pre_screenshot_bytes, xml_list, action_sequence
 
     async def _invoke_model(self, llm, current_tools: list, messages: list[BaseMessage]):
-        """Binds the active tools and invokes the model through the LLM gateway."""
-        # Bind active tools
-        bound_llm = llm.bind_tools(current_tools)
-
-        # Invoke Model. Streaming, live-token UI deltas, classified
-        # retries, and pause/resume are all owned by the LLM gateway
-        # (acomplete); a typed LLMCallError propagates if it gives up.
-        return await invoke_llm_with_timeout_message(
-            acomplete(bound_llm, messages), timeout_seconds=10, hard_timeout=180
-        )
+        """Invoke the configured action model and its fallback."""
+        return await acomplete_operator(self.ctx, llm, current_tools, messages)
 
     async def _process_tool_calls(
         self,

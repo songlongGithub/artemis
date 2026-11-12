@@ -32,7 +32,7 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from artemis.config import (
     PAUSE_FILE,
@@ -45,6 +45,7 @@ from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandle
 from artemis.llm.google import is_google_chat_model, is_google_provider
 from artemis.llm.reliability import (
     CircuitBreaker,
+    Failure,
     FailureCategory,
     LLMCallError,
     LLMExhaustedError,
@@ -60,6 +61,7 @@ from artemis.llm.structured import (
     content_to_text,
     parse_structured,
 )
+from artemis.tools.tool_wrapper import resolve_image_carrier, tool_result_messages
 from third_party.mobile_use.llm_service import FallbackRunner, GetLLM, LLMWaitNotice
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -98,6 +100,7 @@ def _begin_llm_request(provider: str | None) -> Token:
 # behind this call (set by with_fallback).  When a fallback exists, exhausting
 # retries hands over to it immediately instead of pausing the whole task.
 _FALLBACK_AVAILABLE: ContextVar[bool] = ContextVar("llm_fallback_available", default=False)
+_FAST_ACTION_FAILOVER: ContextVar[bool] = ContextVar("llm_fast_action_failover", default=False)
 
 # Optional background advice must never pause the device-owning task.
 _PAUSE_ALLOWED: ContextVar[bool] = ContextVar("llm_pause_allowed", default=True)
@@ -412,7 +415,14 @@ async def _run_with_recovery[T](
         try:
             while True:
                 if endpoint_key:
-                    await _wait_for_breaker(endpoint_key)
+                    if _FAST_ACTION_FAILOVER.get():
+                        if not _ENDPOINT_BREAKER.allow(endpoint_key):
+                            raise LLMExhaustedError(
+                                f"LLM circuit open for {endpoint_key}",
+                                failure=Failure(FailureCategory.PROVIDER_UNAVAILABLE, True, True),
+                            )
+                    else:
+                        await _wait_for_breaker(endpoint_key)
                 try:
                     result = await call_once()
                 except (KeyboardInterrupt, asyncio.CancelledError):
@@ -441,6 +451,11 @@ async def _run_with_recovery[T](
                         )
                         raise LLMPermanentError(str(e), failure=failure, cause=e) from e
                     last_error, last_failure = e, failure
+                    if (
+                        _FAST_ACTION_FAILOVER.get()
+                        and failure.category is FailureCategory.PROVIDER_UNAVAILABLE
+                    ):
+                        break
                     attempt = attempts.get(failure.category, 0) + 1
                     attempts[failure.category] = attempt
                     policy = retry_policy_for(failure.category)
@@ -988,14 +1003,19 @@ class _ObservedFallback(FallbackRunner):
     retries run out instead of pausing the task.
     """
 
+    def __init__(self, *, fast_action_failover: bool = False):
+        self.fast_action_failover = fast_action_failover
+
     @contextmanager
     def main_scope(self) -> Iterator[None]:
         # Reset before the fallback call starts: nothing is behind the
         # fallback, so if it runs out of retries the task should pause.
         token = _FALLBACK_AVAILABLE.set(True)
+        fast_action_token = _FAST_ACTION_FAILOVER.set(self.fast_action_failover)
         try:
             yield
         finally:
+            _FAST_ACTION_FAILOVER.reset(fast_action_token)
             _FALLBACK_AVAILABLE.reset(token)
 
     def fallback_reason(self, error: Exception) -> tuple[str, str | None] | None:
@@ -1024,3 +1044,51 @@ class _ObservedFallback(FallbackRunner):
 
 # Runs main_call; switches to fallback_call when another endpoint could succeed.
 with_fallback = _ObservedFallback().run
+_with_action_fallback = _ObservedFallback(fast_action_failover=True).run
+
+
+async def acomplete_operator(
+    ctx: ArtemisContext,
+    primary,
+    tools: list,
+    messages: list[BaseMessage],
+):
+    """Run one action decision, reusing the same tools and transcript on failover."""
+
+    async def invoke(model, request_messages):
+        return await invoke_llm_with_timeout_message(
+            acomplete(model.bind_tools(tools=tools), request_messages)
+        )
+
+    if not isinstance(primary, RobustChatModelWrapper) or primary.endpoint is None:
+        return await invoke(primary, messages)
+    backup = _resolve_endpoint(ctx, "operator", use_fallback=True)
+    if (backup.provider, backup.model_name) == (
+        primary.endpoint.provider,
+        primary.endpoint.model_name,
+    ):
+        return await invoke(primary, messages)
+
+    async def invoke_backup():
+        model = get_llm(ctx, name="operator", use_fallback=True)
+        request_messages = messages
+        if resolve_image_carrier(primary) == "tool" and resolve_image_carrier(model) == "human":
+            request_messages = []
+            for message in messages:
+                if isinstance(message, ToolMessage) and isinstance(message.content, list):
+                    request_messages.extend(
+                        tool_result_messages(
+                            message.tool_call_id,
+                            message,
+                            name=message.name,
+                            status=message.status,
+                            image_carrier="human",
+                        )
+                    )
+                else:
+                    request_messages.append(message)
+        return await invoke(model, request_messages)
+
+    return await _with_action_fallback(
+        main_call=lambda: invoke(primary, messages), fallback_call=invoke_backup
+    )

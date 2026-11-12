@@ -62,7 +62,10 @@
     // 🎯 Operator: Screen perception, element interaction, and direct execution
     "operator": {
       "thinking_level": "medium",
-      "include_thoughts": true
+      "include_thoughts": true,
+      "fallback": {
+        "model": "gpt-6-luna--fast"
+      }
     },
 
     // 🎬 Video Analyzer: Multimodal screen recording verification and temporal analysis

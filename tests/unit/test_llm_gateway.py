@@ -3,14 +3,18 @@
 import asyncio
 from types import SimpleNamespace
 
-from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
+from openai import BadRequestError, InternalServerError
+import httpx
 import pytest
 
 from artemis.llm.reliability import LLMExhaustedError, LLMPermanentError
+from artemis.llm.router import ModelEndpoint, ModelProvider
 from artemis.services import llm as llm_service
 from artemis.services.llm import (
     RobustChatModelWrapper,
     acomplete,
+    acomplete_operator,
     acomplete_structured,
     with_fallback,
 )
@@ -31,6 +35,55 @@ def _isolate_gateway_state(monkeypatch, tmp_path):
     yield
     llm_service._ENDPOINT_BREAKER._states.clear()
     llm_service._NON_STREAMING_ENDPOINTS.clear()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [503, 400])
+async def test_operator_only_switches_for_recoverable_errors(monkeypatch, status):
+    request = httpx.Request("POST", "http://localhost/v1/chat/completions")
+    error_type = InternalServerError if status == 503 else BadRequestError
+    messages = [HumanMessage(content="Swipe once")]
+    tools = [{"name": "swipe"}]
+    attempts = []
+
+    class Model:
+        def __init__(self, name):
+            self.name = name
+
+        def bind_tools(self, selected_tools):
+            assert selected_tools == tools
+            return self
+
+        async def astream(self, transcript):
+            assert transcript is messages
+            attempts.append(self.name)
+            if self.name == "primary":
+                raise error_type(
+                    f"HTTP {status}", response=httpx.Response(status, request=request), body=None
+                )
+            yield AIMessageChunk(content="fallback response")
+
+    def wrapper(name):
+        endpoint = ModelEndpoint(provider=ModelProvider.OPENAI, model_name=name)
+        return RobustChatModelWrapper(Model(name), endpoint=endpoint)
+
+    primary, backup = wrapper("primary"), wrapper("backup")
+    monkeypatch.setattr(llm_service, "_resolve_endpoint", lambda *a, **kw: backup.endpoint)
+    monkeypatch.setattr(llm_service, "get_llm", lambda *a, **kw: backup)
+
+    if status == 400:
+        with pytest.raises(LLMPermanentError):
+            await acomplete_operator(None, primary, tools, messages)
+        assert attempts == ["primary"]
+        return
+
+    # Three outages open the primary circuit. The fourth turn goes directly
+    # to the backup instead of waiting for the primary cooldown.
+    async with asyncio.timeout(2):
+        for _ in range(4):
+            result = await acomplete_operator(None, primary, tools, messages)
+            assert result.content == "fallback response"
+    assert attempts == ["primary", "backup"] * 3 + ["backup"]
 
 
 @pytest.mark.asyncio
