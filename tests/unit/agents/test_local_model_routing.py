@@ -131,3 +131,77 @@ def test_capsule_fallback_accepts_only_the_same_provider():
     assert manager._resolve_capsule_fallback_model(ctx) is None
     ctx.llm_config.summarizer.fallback = SimpleNamespace(provider="openai", model="primary")
     assert manager._resolve_capsule_fallback_model(ctx) is None
+
+
+@pytest.mark.parametrize("which", ["visual", "capsule"])
+def test_flash_summary_effort_override_preserves_shared_pro_route(which):
+    ctx = context("openai")
+    ctx.llm_config.summarizer = SimpleNamespace(
+        provider="openai", model="auxiliary", reasoning_effort="max"
+    )
+    with patch("artemis.llm.router.ModelFactory.get_model", return_value=object()) as factory:
+        if which == "visual":
+            VisualStepSummarizer(ctx, model_name="auxiliary", reasoning_effort="medium")
+        else:
+            StepCapsuleLens("auxiliary", ctx=ctx, reasoning_effort="medium")._get_llm()
+        assert factory.call_args.args[0].reasoning_effort == "medium"
+        # Pro creates the same service with no Flash override and still gets max.
+        if which == "visual":
+            VisualStepSummarizer(ctx, model_name="auxiliary")
+        else:
+            StepCapsuleLens("auxiliary", ctx=ctx)._get_llm()
+        assert factory.call_args.args[0].reasoning_effort == "max"
+    assert ctx.llm_config.summarizer.reasoning_effort == "max"
+
+
+def test_flash_capsule_effort_does_not_override_gemini_fallback():
+    ctx = context("openai")
+    ctx.llm_config.summarizer = SimpleNamespace(
+        provider="openai",
+        model="auxiliary",
+        reasoning_effort="max",
+        fallback=SimpleNamespace(provider="openai", model="gemini-backup", reasoning_effort=None),
+    )
+    lens = StepCapsuleLens(
+        "auxiliary", ctx=ctx, reasoning_effort="medium", fallback_model_name="gemini-backup"
+    )
+    with patch("artemis.llm.router.ModelFactory.get_model", return_value=object()) as factory:
+        lens._get_fallback_llm()
+    assert factory.call_args.args[0].reasoning_effort is None
+
+
+def test_flash_and_pro_composition_roots_keep_independent_summary_effort():
+    from artemis.agents.flash.runner import FlashRunner
+    from artemis.config import load_agent_config
+    from artemis.memory import ensure_step_memory
+
+    cfg = load_agent_config()
+    cfg.flash.step_summarizer.reasoning_effort = "medium"
+    ctx = context("openai")
+    ctx.driver = Mock()
+    ctx.step_memory = None
+    with (
+        patch("artemis.agents.flash.runner.load_agent_config", return_value=cfg),
+        patch("artemis.controllers.unified_controller.get_driver"),
+        patch("artemis.agents.flash.runner.VisualStepSummarizer") as visual,
+        patch("artemis.memory.HistoryChunkManager") as chunker,
+    ):
+        runner = FlashRunner(ctx, goal="Scroll once")
+        runner.ctx.data_engine = SimpleNamespace(session_start_time=0)
+        runner._build_ledger()
+    assert visual.call_args.kwargs["reasoning_effort"] == "medium"
+    assert chunker.call_args.kwargs["summarizer_reasoning_effort"] == "medium"
+
+    ctx = context("openai")
+    with (
+        patch("artemis.config.load_agent_config", return_value=cfg),
+        patch("artemis.agents.flash.summarizer.VisualStepSummarizer") as visual,
+    ):
+        ensure_step_memory(ctx)
+    assert "reasoning_effort" not in visual.call_args.kwargs
+
+
+def test_history_chunk_manager_forwards_flash_override():
+    with patch("artemis.memory.chunking.StepCapsuleLens") as lens:
+        HistoryChunkManager(ctx=context("openai"), summarizer_reasoning_effort="medium")
+    assert lens.call_args.kwargs["reasoning_effort"] == "medium"

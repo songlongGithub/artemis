@@ -298,7 +298,9 @@ class StepCapsuleLens(StepLens):
         ctx: Any = None,
         fallback_model_name: str | None = None,
         fallback_llm: Any | None = None,
+        reasoning_effort: str | None = None,
     ):
+        self._reasoning_effort = reasoning_effort
         self._model_name = model_name or "gemini-3.8-flash"
         self._llm = llm
         self._ctx = ctx
@@ -322,7 +324,7 @@ class StepCapsuleLens(StepLens):
                 " must cover the full step range without gaps or overlaps. Return only JSON."
             )
 
-    def _build_llm(self, model_name: str):
+    def _build_llm(self, model_name: str, reasoning_effort: str | None = None):
         provider = ModelProvider.from_string(get_operator_model_provider(self._ctx))
         if provider == ModelProvider.GOOGLE:
             from artemis.services.llm import get_google_llm
@@ -335,15 +337,17 @@ class StepCapsuleLens(StepLens):
                 model_name=model_name,
                 temperature=0.0,
                 timeout_seconds=120.0,
-                reasoning_effort=get_summarizer_reasoning_effort(
-                    self._ctx, model_name, provider.value
+                reasoning_effort=(
+                    reasoning_effort
+                    if reasoning_effort is not None
+                    else get_summarizer_reasoning_effort(self._ctx, model_name, provider.value)
                 ),
             )
         )
 
     def _get_llm(self):
         if self._llm is None:
-            self._llm = self._build_llm(self._model_name)
+            self._llm = self._build_llm(self._model_name, self._reasoning_effort)
         return self._llm
 
     def _get_fallback_llm(self):
@@ -894,7 +898,9 @@ class HistoryChunkManager:
         capsule_service: StepMemoryService | None = None,
         meter_getter: Callable[[], int | None] | None = None,
         goal: str | None = None,
+        summarizer_reasoning_effort: str | None = None,
     ):
+        self._summarizer_reasoning_effort = summarizer_reasoning_effort
         self._engine = engine
         self._ctx = ctx
         # Accepted for the callers' wiring; the frozen region no longer
@@ -960,6 +966,7 @@ class HistoryChunkManager:
             self._model_name,
             ctx=ctx,
             fallback_model_name=self._resolve_capsule_fallback_model(ctx),
+            reasoning_effort=self._summarizer_reasoning_effort,
         )
         return ChunkCapsuleService(ctx, lens, **kwargs)
 

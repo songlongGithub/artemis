@@ -164,6 +164,7 @@ class FlashRunner:
             VisualStepSummarizer(
                 ctx,
                 model_name=self.step_summarizer_cfg.model,
+                reasoning_effort=self.step_summarizer_cfg.reasoning_effort,
                 retry_limit=self.memory_runtime_cfg.retry_limit,
                 max_concurrency=self.memory_runtime_cfg.max_concurrency,
                 flush_timeout_s=self.memory_runtime_cfg.flush_timeout_s,
@@ -262,6 +263,7 @@ class FlashRunner:
                         engine=engine,
                         ctx=self.ctx,
                         chunking_config=self.chunking_cfg,
+                        summarizer_reasoning_effort=self.step_summarizer_cfg.reasoning_effort,
                         transcript_config=cfg,
                         goal=self.goal,
                     )

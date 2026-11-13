@@ -56,3 +56,16 @@ session duration, first action latency, summary drain, and all measured tokens.
 2026-11-12/13 device evidence and the measured rollout decision are documented
 in `docs/verification/flash-decisions-2026-11-13.md`. Broader app navigation, multi-step candidate
 planning, checkpoint substitution and enabling by default need separate evidence.
+
+## Profile summary effort
+
+The personal fork sets `agent.flash.step_summarizer.reasoning_effort` to
+`medium` in `config/artemis.jsonc`. Flash passes this value into its visual-step
+service and history-capsule lens; shared `nodes.summarizer` configuration is not
+mutated. Pro constructs both without the Flash override and continues to inherit
+`max` from the global Luna route. Omitting the optional field preserves role
+inheritance; alternate fallback models retain their own configured effort.
+Decisions remains off by default and is independent of summary effort.
+
+Production-config device acceptance is recorded in
+`docs/verification/flash-summary-medium-2026-11-13.md`.

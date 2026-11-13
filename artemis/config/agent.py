@@ -400,6 +400,10 @@ class StepSummarizerConfig(BaseModel):
         default="gemini-2.5-flash-lite",
         description="Lightweight model used for background step state summarization.",
     )
+    reasoning_effort: Literal["none", "low", "medium", "high", "max"] | None = Field(
+        default=None,
+        description="Flash-only effort for compatible visual and history summary models; None inherits the role.",
+    )
     prune_history_xml: bool = Field(
         default=True,
         description="Whether to prune outdated heavy UI XML trees from historical turns.",

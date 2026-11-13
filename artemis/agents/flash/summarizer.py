@@ -155,6 +155,7 @@ class VisualStepSummarizer(StepMemoryService):
         *,
         max_concurrency: int = 1,
         flush_timeout_s: float = 30.0,
+        reasoning_effort: str | None = None,
     ):
         super().__init__(
             ctx,
@@ -163,6 +164,8 @@ class VisualStepSummarizer(StepMemoryService):
             flush_timeout_s=flush_timeout_s,
         )
 
+        # The profile may override effort without mutating the shared role.
+        effective_effort = reasoning_effort
         # Initialize lightweight VLM: prioritize explicit model_name
         target_model = model_name or "gemini-2.5-flash-lite"
         self._model_name = target_model
@@ -171,19 +174,22 @@ class VisualStepSummarizer(StepMemoryService):
             if provider == ModelProvider.GOOGLE:
                 self._llm = get_google_llm(model_name=target_model, temperature=0.0)
             else:
+                if effective_effort is None:
+                    effective_effort = get_summarizer_reasoning_effort(
+                        ctx, target_model, provider.value
+                    )
                 self._llm = ModelFactory.get_model(
                     ModelEndpoint(
                         provider=provider,
                         model_name=target_model,
                         temperature=0.0,
                         timeout_seconds=120.0,
-                        reasoning_effort=get_summarizer_reasoning_effort(
-                            ctx, target_model, provider.value
-                        ),
+                        reasoning_effort=effective_effort,
                     )
                 )
         else:
-            self._llm = get_llm(ctx, name="summarizer")
+            kwargs = {"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}
+            self._llm = get_llm(ctx, name="summarizer", **kwargs)
         try:
             configured = getattr(self._llm, "model", None) or getattr(self._llm, "model_name", None)
             if isinstance(configured, str) and configured:
@@ -195,6 +201,11 @@ class VisualStepSummarizer(StepMemoryService):
                 exc,
                 exc_info=True,
             )
+
+        logger.info(
+            f"VisualStepSummarizer: model={self._model_name} "
+            f"reasoning_effort={effective_effort or 'role_default'}"
+        )
 
         # Load system prompt templates: the dual-frame transition prompt and
         # the single-frame variant (§5 revision: describe whichever frames

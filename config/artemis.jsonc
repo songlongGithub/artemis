@@ -126,6 +126,7 @@
       "step_summarizer": {
         "enabled": true, // Whether background step summarization is active
         "model": "gpt-6-luna--fast", // Lightweight model for fast background inference
+        "reasoning_effort": "medium", // Flash summaries only; Pro inherits the global max
         "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
       }
     },
