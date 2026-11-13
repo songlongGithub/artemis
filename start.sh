@@ -95,7 +95,11 @@ request_sudo() {
     return 1
 }
 
-# Helper to check if Node.js & npm meet Angular CLI 22 requirement (>= 22.22.0, >= 24.15.0, or >= 26.0.0)
+# Helper to check whether the local Node.js & npm can run the Showcase UI build.
+# The floor is 22.22.0. Angular CLI 22 additionally narrows this per major line
+# (^22.22.3 || ^24.15.0 || >=26.0.0), so a serviceable Node such as 24.9.0 is
+# rejected by the CLI itself. The build step widens that CLI check to the
+# installed release instead of installing another Node.js on every start.
 is_node_compatible() {
     if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
         return 1
@@ -106,14 +110,23 @@ is_node_compatible() {
     local major minor
     major="$(echo "${node_ver}" | cut -d. -f1)"
     minor="$(echo "${node_ver}" | cut -d. -f2)"
-    if [ "${major}" -ge 26 ] 2>/dev/null; then
+    [ -n "${major}" ] && [ -n "${minor}" ] || return 1
+    if [ "${major}" -ge 22 ] 2>/dev/null && { [ "${major}" -gt 22 ] || [ "${minor}" -ge 22 ]; }; then
         return 0
-    elif [ "${major}" -ge 24 ] 2>/dev/null; then
-        [ "${minor}" -ge 15 ] 2>/dev/null && return 0
-    elif [ "${major}" -ge 22 ] 2>/dev/null; then
-        [ "${minor}" -ge 22 ] 2>/dev/null && return 0
     fi
     return 1
+}
+
+# Run a command with a wall-clock limit so a stalled npm/network step can never
+# block Artemis startup. macOS ships no coreutils timeout, hence the perl alarm.
+run_with_timeout() {
+    local limit_secs="$1"
+    shift
+    if command -v perl >/dev/null 2>&1; then
+        perl -e 'alarm shift; exec @ARGV' "${limit_secs}" "$@"
+    else
+        "$@"
+    fi
 }
 
 # 2. Check or install uv (Fast Python package manager)
@@ -300,7 +313,7 @@ if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "
     if ! is_node_compatible; then
         OS_NAME="$(uname -s)"
         if command -v node >/dev/null 2>&1; then
-            echo -e "   ${YELLOW}⚡ Detected Node.js $(node -v 2>/dev/null), but Angular CLI requires Node.js >= v22.22.0. Upgrading Node.js...${NC}"
+            echo -e "   ${YELLOW}⚡ Node.js $(node -v 2>/dev/null) is below the v22.22.0 floor required by the Showcase UI build. Installing a supported release...${NC}"
         else
             echo -e "   ${YELLOW}⚡ Node.js/npm not found. Auto-installing Node.js 22 LTS for Showcase UI compilation...${NC}"
         fi
@@ -365,22 +378,36 @@ if [ ! -f "${SHOWCASE_INDEX}" ] && [ ! -f "${SHOWCASE_INDEX_ALT1}" ] && [ ! -f "
     if is_node_compatible; then
         echo -e "   ${GREEN}✓ Node.js $(node -v 2>/dev/null) and npm $(npm -v 2>/dev/null) ready.${NC}"
         echo -e "   ${YELLOW}🎨 Showcase UI build not found. Compiling Angular Showcase UI...${NC}"
-        (
+        SHOWCASE_BUILT=false
+        if (
             cd "${SCRIPT_DIR}/apps/showcase_ui"
-            npm install --silent
-            # Auto-patch Angular CLI node version constraint if running on Node 22.22.x (e.g. Cloudtop / Debian)
+            run_with_timeout 600 npm install --silent
+            # Angular CLI 22 refuses to build on Node releases outside
+            # ^22.22.3 || ^24.15.0 || >=26.0.0 (24.9.0, for example). Widen the
+            # check to the running release instead of swapping Node.js, leaving
+            # every other CLI file untouched.
             CLI_NODE_VERSION="${SCRIPT_DIR}/apps/showcase_ui/node_modules/@angular/cli/src/utilities/node-version.js"
             if [ -f "${CLI_NODE_VERSION}" ]; then
-                if [ "$(uname -s)" = "Darwin" ]; then
-                    sed -i '' 's/22\.22\.3/22.22.0/g' "${CLI_NODE_VERSION}" 2>/dev/null || true
-                else
-                    sed -i 's/22\.22\.3/22.22.0/g' "${CLI_NODE_VERSION}" 2>/dev/null || true
+                NODE_MAJOR_MINOR="$(node -v 2>/dev/null | tr -d 'v' | cut -d. -f1,2)"
+                if [ -n "${NODE_MAJOR_MINOR}" ]; then
+                    if [ "$(uname -s)" = "Darwin" ]; then
+                        sed -i '' -E "s#const SUPPORTED_NODE_VERSIONS = '[^']*'#const SUPPORTED_NODE_VERSIONS = '>=${NODE_MAJOR_MINOR}.0'#" "${CLI_NODE_VERSION}" 2>/dev/null || true
+                    else
+                        sed -i -E "s#const SUPPORTED_NODE_VERSIONS = '[^']*'#const SUPPORTED_NODE_VERSIONS = '>=${NODE_MAJOR_MINOR}.0'#" "${CLI_NODE_VERSION}" 2>/dev/null || true
+                    fi
                 fi
             fi
-            npm run build
-        )
+            run_with_timeout 900 npm run build
+        ); then
+            SHOWCASE_BUILT=true
+        fi
+        if [ "${SHOWCASE_BUILT}" = true ]; then
+            echo -e "   ${GREEN}✓ Showcase UI compiled.${NC}"
+        else
+            echo -e "   ${YELLOW}⚠ Showcase UI build failed or timed out; Artemis will serve the fallback build notice.${NC}"
+        fi
     else
-        echo -e "   ${YELLOW}⚠ Could not configure compatible Node.js (>= 22.22.0). Showcase UI will serve fallback build notice.${NC}"
+        echo -e "   ${YELLOW}⚠ Could not configure Node.js >= 22.22.0. Showcase UI will serve fallback build notice.${NC}"
     fi
 fi
 
