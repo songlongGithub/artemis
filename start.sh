@@ -241,6 +241,23 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
     fi
 fi
 
+# 3b. Prefer the locally patched scrcpy build.
+# Upstream scrcpy 5.0.1 crashes intermittently when --record is used: the
+# recorder context is created by the recorder thread, but the demuxer thread
+# opens the recorder packet sinks and uses that context. If the demuxer wins
+# the race, scrcpy segfaults in avformat_new_stream ~1.5s after startup.
+# The patched build opens the output file before the recorder thread starts.
+# Artemis resolves ARTEMIS_SCRCPY_PATH first, and scrcpy itself honors
+# SCRCPY_SERVER_PATH for the server jar.
+SCRCPY_PATCHED_DIR="${ARTEMIS_SCRCPY_PATCHED_DIR:-${HOME}/.local/opt/scrcpy-5.0.1-patched}"
+if [ -z "${ARTEMIS_SCRCPY_PATH:-}" ] && [ -x "${SCRCPY_PATCHED_DIR}/bin/scrcpy" ]; then
+    export ARTEMIS_SCRCPY_PATH="${SCRCPY_PATCHED_DIR}/bin/scrcpy"
+    if [ -f "${SCRCPY_PATCHED_DIR}/server/scrcpy-server" ]; then
+        export SCRCPY_SERVER_PATH="${SCRCPY_PATCHED_DIR}/server/scrcpy-server"
+    fi
+    echo -e "   ${GREEN}✓ Using patched scrcpy: ${ARTEMIS_SCRCPY_PATH}${NC}"
+fi
+
 # Ensure local ADB daemon is warm & listening so probes do not hit 'Connection refused'
 if command -v adb >/dev/null 2>&1; then
     (unset ADB_SERVER_SOCKET; adb start-server >/dev/null 2>&1 || true)
