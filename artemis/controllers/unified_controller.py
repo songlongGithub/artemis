@@ -25,6 +25,7 @@ from uuid import uuid4
 from artemis.config.paths import get_temp_dir
 from artemis.context import ArtemisContext
 from artemis.drivers.factory import get_driver
+from artemis.toolchain import find_scrcpy
 from artemis.utils.video import (
     ANDROID_RECORDING_SEGMENT_SECONDS,
     await_scrcpy_first_frame,
@@ -339,7 +340,7 @@ class UnifiedMobileController(UnifiedMobileControllerBase):
         output_dir = session.local_video_path.parent
         new_video_path = output_dir / f"recording_{session.android_segment_index:03d}.mkv"
         process = await self._spawn_scrcpy(
-            build_scrcpy_record_command("scrcpy", session.device_id, new_video_path)
+            build_scrcpy_record_command(find_scrcpy(), session.device_id, new_video_path)
         )
         spawned_at = time.time()
         first_frame_at = await await_scrcpy_first_frame(process, spawned_at)
@@ -448,7 +449,7 @@ class UnifiedMobileController(UnifiedMobileControllerBase):
                 session.capture_width, session.capture_height = display_state[1:]
 
             # Start scrcpy in background
-            cmd = build_scrcpy_record_command("scrcpy", device_id, local_video_path)
+            cmd = build_scrcpy_record_command(find_scrcpy(), device_id, local_video_path)
 
             process = await self._spawn_scrcpy(cmd)
             spawned_at = time.time()

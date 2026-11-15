@@ -340,6 +340,46 @@ async def test_unified_controller_start_recording(mock_ctx, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_recording_uses_selected_scrcpy_for_initial_and_rotated_segments(mock_ctx, tmp_path):
+    """A configured fixed recorder must never fall back to the system binary."""
+    controller = UnifiedMobileController(mock_ctx)
+    device_id = "emulator-5554"
+    remove_active_session(device_id)
+    selected = str(tmp_path / "fixed-scrcpy")
+    process = MagicMock(returncode=None)
+    with (
+        patch("artemis.controllers.unified_controller.find_scrcpy", return_value=selected),
+        patch.object(controller, "_spawn_scrcpy", AsyncMock(return_value=process)) as spawn,
+        patch.object(controller, "_recording_watchdog", AsyncMock()),
+        patch(
+            "artemis.controllers.unified_controller.await_scrcpy_first_frame",
+            AsyncMock(return_value=time.time()),
+        ),
+        patch(
+            "artemis.controllers.unified_controller.get_android_display_state",
+            AsyncMock(return_value=(0, 1080, 2424)),
+        ),
+    ):
+        try:
+            assert (await controller.start_video_recording(output_dir=tmp_path)).success
+            session = get_active_session(device_id)
+            assert session is not None
+            assert await controller._start_next_recording_segment(session, (1, 2424, 1080))
+            assert spawn.await_count == 2
+            for call in spawn.await_args_list:
+                command = call.args[0]
+                assert command[0] == selected
+                assert "--no-audio" not in command
+                assert "--record" in command
+        finally:
+            session = get_active_session(device_id)
+            if session and session.watchdog_task:
+                session.watchdog_task.cancel()
+                await asyncio.gather(session.watchdog_task, return_exceptions=True)
+            remove_active_session(device_id)
+
+
+@pytest.mark.asyncio
 async def test_unified_controller_stop_recording(mock_ctx, tmp_path):
     controller = UnifiedMobileController(mock_ctx)
     remove_active_session("emulator-5554")

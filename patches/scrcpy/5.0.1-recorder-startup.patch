@@ -1,0 +1,197 @@
+--- a/app/src/recorder.c
++++ b/app/src/recorder.c
+@@ -168,6 +168,7 @@
+ sc_recorder_close_output_file(struct sc_recorder *recorder) {
+     avio_close(recorder->ctx->pb);
+     avformat_free_context(recorder->ctx);
++    recorder->ctx = NULL;
+ }
+ 
+ static inline bool
+@@ -451,18 +452,6 @@
+     return !error;
+ }
+ 
+-static bool
+-sc_recorder_record(struct sc_recorder *recorder) {
+-    bool ok = sc_recorder_open_output_file(recorder);
+-    if (!ok) {
+-        return false;
+-    }
+-
+-    ok = sc_recorder_process_packets(recorder);
+-    sc_recorder_close_output_file(recorder);
+-    return ok;
+-}
+-
+ static int
+ run_recorder(void *data) {
+     struct sc_recorder *recorder = data;
+@@ -471,11 +460,13 @@
+     bool ok = sc_thread_set_priority(SC_THREAD_PRIORITY_LOW);
+     (void) ok; // We don't care if it worked
+ 
+-    bool success = sc_recorder_record(recorder);
++    bool success = sc_recorder_process_packets(recorder);
+ 
+     sc_mutex_lock(&recorder->mutex);
+     // Prevent the producer from pushing any new packet
+     recorder->stopped = true;
++    // Exclude late sink opens while releasing their shared context.
++    sc_recorder_close_output_file(recorder);
+     // Discard pending packets
+     sc_recorder_queue_clear(&recorder->video_queue);
+     sc_recorder_queue_clear(&recorder->audio_queue);
+@@ -647,6 +638,10 @@
+     assert(!recorder->audio_init);
+ 
+     sc_mutex_lock(&recorder->mutex);
++    if (recorder->stopped) {
++        sc_mutex_unlock(&recorder->mutex);
++        return false;
++    }
+ 
+     AVStream *stream = avformat_new_stream(recorder->ctx, NULL);
+     if (!stream) {
+@@ -828,10 +823,18 @@
+ 
+ bool
+ sc_recorder_start(struct sc_recorder *recorder) {
++    // Packet sinks may open as soon as this function returns. Initialize the
++    // shared context before starting any producer, even if the low-priority
++    // recorder thread has not been scheduled yet.
++    if (!sc_recorder_open_output_file(recorder)) {
++        return false;
++    }
++
+     bool ok = sc_thread_create(&recorder->thread, run_recorder,
+                                "scrcpy-recorder", recorder);
+     if (!ok) {
+         LOGE("Could not start recorder thread");
++        sc_recorder_close_output_file(recorder);
+         return false;
+     }
+ 
+--- /dev/null
++++ b/app/tests/test_recorder_startup.c
+@@ -0,0 +1,100 @@
++// Deterministically hold the recorder worker until both packet sinks open.
++// The production bug used a NULL context when the demuxers won this race.
++#include <assert.h>
++#include <stdio.h>
++
++#define sc_thread_create test_create_thread
++#include "../src/recorder.c"
++#undef sc_thread_create
++
++static sc_thread_fn *pending_worker;
++static void *pending_userdata;
++static bool fail_thread;
++
++bool
++test_create_thread(sc_thread *thread, sc_thread_fn fn, const char *name,
++                   void *userdata) {
++    (void) thread;
++    (void) name;
++    if (fail_thread) {
++        return false;
++    }
++    pending_worker = fn;
++    pending_userdata = userdata;
++    return true;
++}
++
++static void
++on_ended(struct sc_recorder *recorder, bool success, void *userdata) {
++    (void) recorder;
++    (void) success;
++    (void) userdata;
++}
++
++int
++main(void) {
++    const struct sc_recorder_callbacks cbs = {.on_ended = on_ended};
++    struct sc_recorder recorder = {0};
++    const char *filename = "test-recorder-startup.mkv";
++    assert(sc_recorder_init(&recorder, filename, SC_RECORD_FORMAT_MKV,
++                            true, true, SC_ORIENTATION_0, &cbs, NULL));
++    assert(sc_recorder_start(&recorder));
++    // No worker has run. Opening sinks must still have a valid context.
++    assert(pending_worker);
++    assert(recorder.ctx);
++    AVCodecParameters *params = avcodec_parameters_alloc();
++    assert(params);
++    params->codec_type = AVMEDIA_TYPE_VIDEO;
++    params->codec_id = AV_CODEC_ID_H264;
++    params->width = 640;
++    params->height = 480;
++    assert(recorder.video_packet_sink.ops->open(&recorder.video_packet_sink,
++                                               params, NULL));
++    params->codec_type = AVMEDIA_TYPE_AUDIO;
++    params->codec_id = AV_CODEC_ID_OPUS;
++    assert(recorder.audio_packet_sink.ops->open(&recorder.audio_packet_sink,
++                                               params, NULL));
++    assert(recorder.ctx->nb_streams == 2);
++    avcodec_parameters_free(&params);
++    sc_recorder_stop(&recorder);
++    pending_worker(pending_userdata);
++    assert(!recorder.ctx);
++    sc_recorder_destroy(&recorder);
++    assert(!remove(filename));
++
++    // A stopped recorder rejects sinks whose metadata arrived after shutdown.
++    assert(sc_recorder_init(&recorder, filename, SC_RECORD_FORMAT_MKV,
++                            true, true, SC_ORIENTATION_0, &cbs, NULL));
++    assert(sc_recorder_start(&recorder));
++    sc_recorder_stop(&recorder);
++    pending_worker(pending_userdata);
++    params = avcodec_parameters_alloc();
++    assert(params);
++    assert(!recorder.video_packet_sink.ops->open(&recorder.video_packet_sink,
++                                                params, NULL));
++    assert(!recorder.audio_packet_sink.ops->open(&recorder.audio_packet_sink,
++                                                params, NULL));
++    avcodec_parameters_free(&params);
++    sc_recorder_destroy(&recorder);
++    assert(!remove(filename));
++
++    // If thread creation fails, start() owns and closes the output context.
++    fail_thread = true;
++    assert(sc_recorder_init(&recorder, filename, SC_RECORD_FORMAT_MKV,
++                            true, true, SC_ORIENTATION_0, &cbs, NULL));
++    assert(!sc_recorder_start(&recorder));
++    assert(!recorder.ctx);
++    sc_recorder_destroy(&recorder);
++    assert(!remove(filename));
++
++    // An output-open failure must be returned synchronously without a worker.
++    pending_worker = NULL;
++    fail_thread = false;
++    assert(sc_recorder_init(&recorder, "missing-directory/output.mkv",
++                            SC_RECORD_FORMAT_MKV, true, true,
++                            SC_ORIENTATION_0, &cbs, NULL));
++    assert(!sc_recorder_start(&recorder));
++    assert(!pending_worker);
++    sc_recorder_destroy(&recorder);
++    return 0;
++}
+--- a/app/meson.build
++++ b/app/meson.build
+@@ -269,6 +269,17 @@
+ # do not build tests in release (assertions would not be executed at all)
+ if get_option('buildtype') == 'debug'
+     tests = [
++        ['test_recorder_startup', [
++            'tests/test_recorder_startup.c',
++            'src/options.c',
++            'src/util/log.c',
++            'src/util/memory.c',
++            'src/util/str.c',
++            'src/util/strbuf.c',
++            'src/util/term.c',
++            'src/util/thread.c',
++            'src/util/tick.c',
++        ]],
+         ['test_adb_parser', [
+             'tests/test_adb_parser.c',
+             'src/adb/adb_device.c',
