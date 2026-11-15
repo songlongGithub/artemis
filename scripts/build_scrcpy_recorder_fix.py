@@ -9,9 +9,11 @@ Run with Artemis's Python and --activate to select it in this checkout's .env.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime
 import hashlib
 import json
+import os
+import platform
 from pathlib import Path
 import shutil
 import subprocess
@@ -39,14 +41,75 @@ def download(url: str, path: Path, expected: str) -> None:
         partial.replace(path)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--activate", action="store_true")
-    parser.add_argument(
-        "--prefix", type=Path, default=ROOT / ".cache/toolchains/scrcpy-recorder-fix"
-    )
-    args = parser.parse_args()
-    prefix = args.prefix.resolve()
+def build_inputs() -> dict:
+    return {
+        "version": VERSION,
+        "source_sha256": SOURCE_SHA256,
+        "server_sha256": SERVER_SHA256,
+        "patch_sha256": sha256(PATCH),
+        "builder_sha256": sha256(Path(__file__)),
+        "platform": platform.system(),
+        "machine": platform.machine(),
+    }
+
+
+def current_build(prefix: Path) -> dict | None:
+    """Require both matching inputs and intact installed client/server bytes."""
+    try:
+        receipt = json.loads((prefix / "build-receipt.json").read_text())
+        binary = prefix / "bin/scrcpy"
+        server = prefix / "share/scrcpy/scrcpy-server"
+        if (
+            all(receipt.get(key) == value for key, value in build_inputs().items())
+            and receipt.get("native_tests_passed") is True
+            and receipt.get("binary") == str(binary)
+            and os.access(binary, os.X_OK)
+            and receipt.get("binary_sha256") == sha256(binary)
+            and sha256(server) == SERVER_SHA256
+        ):
+            return receipt
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def activate(prefix: Path) -> None:
+    from dotenv import dotenv_values, set_key
+
+    env_file = ROOT / ".env"
+    # Do not rewrite unchanged config: its bytes participate in validation.
+    values = dotenv_values(env_file)
+    for key, value in {
+        "ARTEMIS_SCRCPY_PATH": str(prefix / "bin/scrcpy"),
+        "SCRCPY_SERVER_PATH": str(prefix / "share/scrcpy/scrcpy-server"),
+    }.items():
+        if values.get(key) != value:
+            set_key(env_file, key, value)
+
+
+def publish_installation(staged: Path, prefix: Path) -> None:
+    """Replace complete files by rename, preserving running executable inodes."""
+    if (
+        not (staged / "bin/scrcpy").is_file()
+        or not (staged / "share/scrcpy/scrcpy-server").is_file()
+    ):
+        raise RuntimeError("Staged scrcpy installation is incomplete")
+    for source in sorted(staged.rglob("*")):
+        if not source.is_file():
+            continue
+        destination = prefix / source.relative_to(staged)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as temporary:
+            temporary_path = Path(temporary.name)
+        try:
+            shutil.copy2(source, temporary_path)
+            temporary_path.replace(destination)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+
+def build(prefix: Path) -> dict:
+    expected_inputs = build_inputs()
     cache = ROOT / ".cache/scrcpy-recorder-fix"
     cache.mkdir(parents=True, exist_ok=True)
     archive = cache / f"scrcpy-v{VERSION}.tar.gz"
@@ -92,26 +155,65 @@ def main() -> None:
                 for name in ("testlog.txt", "testlog.json"):
                     shutil.copy2(build / "meson-logs" / name, reports / name)
             else:
-                subprocess.run(["meson", "install", "-C", str(build), "--no-rebuild"], check=True)
+                staging = work / "install"
+                subprocess.run(
+                    [
+                        "meson",
+                        "install",
+                        "-C",
+                        str(build),
+                        "--no-rebuild",
+                        f"--destdir={staging}",
+                    ],
+                    check=True,
+                )
+                if build_inputs() != expected_inputs:
+                    raise RuntimeError(
+                        "scrcpy build inputs changed; installation was not published"
+                    )
+                publish_installation(staging / prefix.relative_to(prefix.anchor), prefix)
 
     binary = prefix / "bin/scrcpy"
+    if build_inputs() != expected_inputs:
+        raise RuntimeError("scrcpy build inputs changed during build; no success receipt written")
     receipt = {
         "built_at": datetime.now(UTC).isoformat(),
-        "version": VERSION,
-        "source_sha256": SOURCE_SHA256,
-        "server_sha256": SERVER_SHA256,
-        "patch_sha256": sha256(PATCH),
+        **expected_inputs,
         "binary": str(binary),
         "binary_sha256": sha256(binary),
         "native_tests_passed": True,
     }
-    (prefix / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
-    if args.activate:
-        from dotenv import set_key
+    temporary_receipt = prefix / "build-receipt.tmp"
+    temporary_receipt.write_text(json.dumps(receipt, indent=2) + "\n")
+    temporary_receipt.replace(prefix / "build-receipt.json")
+    return receipt
 
-        # Existing explicit tool selection is the only activation mechanism;
-        # this does not alter Homebrew or other applications' scrcpy.
-        set_key(ROOT / ".env", "ARTEMIS_SCRCPY_PATH", str(binary))
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--activate", action="store_true")
+    parser.add_argument(
+        "--ensure", action="store_true", help="Reuse an intact build with matching inputs"
+    )
+    parser.add_argument(
+        "--prefix", type=Path, default=ROOT / ".cache/toolchains/scrcpy-recorder-fix"
+    )
+    args = parser.parse_args()
+    prefix = args.prefix.resolve()
+    receipt = current_build(prefix) if args.ensure else None
+    if receipt is None:
+        print(
+            "Building patched scrcpy (inputs changed or verified installation unavailable).",
+            flush=True,
+        )
+        receipt = build(prefix)
+    else:
+        print(
+            "Patched scrcpy inputs and installed files unchanged; reusing verified build.",
+            flush=True,
+        )
+    if args.activate:
+        activate(prefix)
     print(json.dumps(receipt, indent=2))
     if args.activate:
         print("Selected in .env. New Artemis workers will use this binary.")

@@ -17,10 +17,29 @@ Keep `origin` pointing to the personal fork and `upstream` pointing to the offic
 repository. `scripts/update_artemis.sh` fast-forwards the current branch from its
 configured tracking branch. It refuses a dirty worktree or an unfinished Git
 operation, and never stashes, rebases, or discards local customizations. Commit or
-otherwise preserve local work before invoking it. Every update runs
-`uv sync --dev --locked`, including retries after a failed sync; dependency and
-test failures remain failures. No script
-automatically pushes code or opens a pull request.
+otherwise preserve local work before invoking it. Every update fetches the
+tracked branch and runs `uv sync --dev --locked`, including retries after a
+failed sync. The dependency check is inexpensive when nothing changed.
+
+After reconciliation, tests are skipped only when the previous update passed
+with the same commit, updater/test selection, Python environment, distribution
+metadata, local `.env`, relevant process configuration and scrcpy receipt.
+Receipts live in the worktree's Git metadata (`artemis-update-state.json`),
+outside tracked files. Only a digest is saved, never credentials. Missing,
+malformed, interrupted or failed receipts require validation; a failed attempt
+invalidates even an older matching success. Updates to one checkout are locked
+against concurrent updater runs. Dependency, native-build and test failures
+remain failures. No script automatically pushes code or opens a pull request.
+
+The updater also runs `build_scrcpy_recorder_fix.py --ensure --activate`.
+Matching native inputs and intact installed client/server files reuse the
+existing verified build. Changed patches or build recipe, legacy/missing
+receipts, damaged binaries and host changes trigger a fresh build and all native
+tests. Activation writes both client and server paths to local `.env`; unchanged
+configuration is not rewritten. The launcher reads those paths before trying
+its legacy default installation. Explicit process environment overrides still
+take precedence. Existing running processes must be restarted to load updates;
+the updater does not interrupt active mobile tasks or restart services.
 
 For a fresh-process MCP readback, use the existing environment:
 

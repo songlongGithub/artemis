@@ -254,23 +254,6 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
     fi
 fi
 
-# 3b. Prefer the locally patched scrcpy build.
-# Upstream scrcpy 5.0.1 crashes intermittently when --record is used: the
-# recorder context is created by the recorder thread, but the demuxer thread
-# opens the recorder packet sinks and uses that context. If the demuxer wins
-# the race, scrcpy segfaults in avformat_new_stream ~1.5s after startup.
-# The patched build opens the output file before the recorder thread starts.
-# Artemis resolves ARTEMIS_SCRCPY_PATH first, and scrcpy itself honors
-# SCRCPY_SERVER_PATH for the server jar.
-SCRCPY_PATCHED_DIR="${ARTEMIS_SCRCPY_PATCHED_DIR:-${HOME}/.local/opt/scrcpy-5.0.1-patched}"
-if [ -z "${ARTEMIS_SCRCPY_PATH:-}" ] && [ -x "${SCRCPY_PATCHED_DIR}/bin/scrcpy" ]; then
-    export ARTEMIS_SCRCPY_PATH="${SCRCPY_PATCHED_DIR}/bin/scrcpy"
-    if [ -f "${SCRCPY_PATCHED_DIR}/server/scrcpy-server" ]; then
-        export SCRCPY_SERVER_PATH="${SCRCPY_PATCHED_DIR}/server/scrcpy-server"
-    fi
-    echo -e "   ${GREEN}✓ Using patched scrcpy: ${ARTEMIS_SCRCPY_PATH}${NC}"
-fi
-
 # Ensure local ADB daemon is warm & listening so probes do not hit 'Connection refused'
 if command -v adb >/dev/null 2>&1; then
     (unset ADB_SERVER_SOCKET; adb start-server >/dev/null 2>&1 || true)
@@ -289,6 +272,38 @@ fi
 # 5. Synchronize Python runtime & dependencies
 echo -e "   ${BLUE}📦 Synchronizing Python runtime and project dependencies...${NC}"
 uv sync --quiet
+
+# Prefer the managed selection in .env over a legacy default installation.
+# Export only these two tool paths; never source .env as shell code.
+if [ -z "${ARTEMIS_SCRCPY_PATH:-}" ]; then
+    MANAGED_SCRCPY="$(uv run --locked --no-sync python -c 'from dotenv import dotenv_values; print(dotenv_values(".env").get("ARTEMIS_SCRCPY_PATH") or "")')"
+    if [ -n "${MANAGED_SCRCPY}" ]; then
+        export ARTEMIS_SCRCPY_PATH="${MANAGED_SCRCPY}"
+    fi
+fi
+if [ -z "${SCRCPY_SERVER_PATH:-}" ]; then
+    MANAGED_SCRCPY_SERVER="$(uv run --locked --no-sync python -c 'from dotenv import dotenv_values; print(dotenv_values(".env").get("SCRCPY_SERVER_PATH") or "")')"
+    if [ -n "${MANAGED_SCRCPY_SERVER}" ]; then
+        export SCRCPY_SERVER_PATH="${MANAGED_SCRCPY_SERVER}"
+    fi
+fi
+
+# 5b. Fall back to the legacy patched scrcpy installation.
+# Upstream scrcpy 5.0.1 crashes intermittently when --record is used: the
+# recorder context is created by the recorder thread, but the demuxer thread
+# opens the recorder packet sinks and uses that context. If the demuxer wins
+# the race, scrcpy segfaults in avformat_new_stream ~1.5s after startup.
+# The patched build opens the output file before the recorder thread starts.
+# Artemis resolves ARTEMIS_SCRCPY_PATH first, and scrcpy itself honors
+# SCRCPY_SERVER_PATH for the server jar.
+SCRCPY_PATCHED_DIR="${ARTEMIS_SCRCPY_PATCHED_DIR:-${HOME}/.local/opt/scrcpy-5.0.1-patched}"
+if [ -z "${ARTEMIS_SCRCPY_PATH:-}" ] && [ -x "${SCRCPY_PATCHED_DIR}/bin/scrcpy" ]; then
+    export ARTEMIS_SCRCPY_PATH="${SCRCPY_PATCHED_DIR}/bin/scrcpy"
+    if [ -z "${SCRCPY_SERVER_PATH:-}" ] && [ -f "${SCRCPY_PATCHED_DIR}/server/scrcpy-server" ]; then
+        export SCRCPY_SERVER_PATH="${SCRCPY_PATCHED_DIR}/server/scrcpy-server"
+    fi
+    echo -e "   ${GREEN}✓ Using patched scrcpy: ${ARTEMIS_SCRCPY_PATH}${NC}"
+fi
 
 # 6. Check and build Showcase UI if not already compiled
 SHOWCASE_INDEX="${SCRIPT_DIR}/apps/showcase_ui/dist/frontend/browser/index.html"

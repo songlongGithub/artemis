@@ -23,6 +23,12 @@ Build and select the fixed client from the repository root:
 .venv/bin/python scripts/build_scrcpy_recorder_fix.py --activate
 ```
 
+For normal updates, `scripts/update_artemis.sh` invokes the same builder with
+`--ensure --activate`. This reuses the current client only when the patch, build
+recipe, host and receipt match and both installed client and server hashes are
+intact. Otherwise it rebuilds, tests and activates the new version. A failed
+build never activates a new selection or permits a cached update success.
+
 The script verifies SHA-256 of the official source archive and server, applies
 the patch to a fresh source tree, runs the debug tests, then builds and installs
 the release client under `.cache/toolchains/scrcpy-recorder-fix`. It records the
@@ -31,11 +37,12 @@ curl, patch, a C compiler, and FFmpeg/SDL3/libusb development dependencies; it
 does not install those dependencies. The server is the unchanged official
 5.0.1 artifact, so no Android SDK build or helper APK change is needed.
 
-`--activate` writes `ARTEMIS_SCRCPY_PATH` in the local `.env`. Both the controller
+`--activate` writes `ARTEMIS_SCRCPY_PATH` and `SCRCPY_SERVER_PATH` in local `.env`.
+Unchanged values are left untouched. Both the controller
 (including segment restarts) and Android driver resolve this explicit path.
 New task workers load it; already running tasks keep their current executable.
-Homebrew's system scrcpy is unchanged. To revert selection, remove that one
-variable from `.env` and start a new task worker.
+Homebrew's system scrcpy is unchanged. To revert selection, remove those two
+variables from `.env` and start a new task worker.
 
 After exploring the target device through Artemis MCP, with no mobile task or
 instrumented test using the device, run the recording-only acceptance:
